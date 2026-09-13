@@ -1,0 +1,54 @@
+<Project>
+  <!--
+    Ducky.Sdk GenerateBuildContext 오버라이드:
+    Windows CMD에서 경로 끝 백슬래시(\)가 닫는 따옴표를 이스케이프해
+    "obj\" 등이 별도 명령으로 실행되는 MSB3073 오류를 방지합니다.
+    모든 경로 인자를 TrimEnd('\')하여 전달합니다.
+  -->
+  <Target Name="GenerateBuildContext" BeforeTargets="BeforeBuild">
+    <Message Text="=== Generate BuildContext (path trim fix) ===" Importance="normal" />
+    <Message Text="Generating BuildContext JSON for: $(MSBuildProjectDirectory)" Importance="normal" />
+
+    <PropertyGroup>
+      <_AbsoluteIntermediateOutputPath Condition="!$([System.IO.Path]::IsPathRooted($(IntermediateOutputPath)))">$([System.IO.Path]::GetFullPath($(MSBuildProjectDirectory)\$(IntermediateOutputPath)))</_AbsoluteIntermediateOutputPath>
+      <_AbsoluteIntermediateOutputPath Condition="$([System.IO.Path]::IsPathRooted($(IntermediateOutputPath)))">$(IntermediateOutputPath)</_AbsoluteIntermediateOutputPath>
+      <_AbsoluteBaseIntermediateOutputPath Condition="!$([System.IO.Path]::IsPathRooted($(BaseIntermediateOutputPath)))">$([System.IO.Path]::GetFullPath($(MSBuildProjectDirectory)\$(BaseIntermediateOutputPath)))</_AbsoluteBaseIntermediateOutputPath>
+      <_AbsoluteBaseIntermediateOutputPath Condition="$([System.IO.Path]::IsPathRooted($(BaseIntermediateOutputPath)))">$(BaseIntermediateOutputPath)</_AbsoluteBaseIntermediateOutputPath>
+      <_AbsoluteOutputPath Condition="!$([System.IO.Path]::IsPathRooted($(OutputPath)))">$([System.IO.Path]::GetFullPath($(MSBuildProjectDirectory)\$(OutputPath)))</_AbsoluteOutputPath>
+      <_AbsoluteOutputPath Condition="$([System.IO.Path]::IsPathRooted($(OutputPath)))">$(OutputPath)</_AbsoluteOutputPath>
+    </PropertyGroup>
+
+    <!-- Windows CMD 인자 깨짐 방지: 경로 끝 백슬래시 제거 -->
+    <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
+      <_TrimmedDuckovFolder>$([System.String]::Copy($(DuckovFolder)).TrimEnd('\'))</_TrimmedDuckovFolder>
+      <_TrimmedSteamFolder>$([System.String]::Copy($(SteamFolder)).TrimEnd('\'))</_TrimmedSteamFolder>
+      <_TrimmedIntPath>$([System.String]::Copy($(_AbsoluteIntermediateOutputPath)).TrimEnd('\'))</_TrimmedIntPath>
+      <_TrimmedBaseIntPath>$([System.String]::Copy($(_AbsoluteBaseIntermediateOutputPath)).TrimEnd('\'))</_TrimmedBaseIntPath>
+      <_TrimmedOutPath>$([System.String]::Copy($(_AbsoluteOutputPath)).TrimEnd('\'))</_TrimmedOutPath>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(OS)' != 'Windows_NT'">
+      <_TrimmedDuckovFolder>$(DuckovFolder)</_TrimmedDuckovFolder>
+      <_TrimmedSteamFolder>$(SteamFolder)</_TrimmedSteamFolder>
+      <_TrimmedIntPath>$(_AbsoluteIntermediateOutputPath)</_TrimmedIntPath>
+      <_TrimmedBaseIntPath>$(_AbsoluteBaseIntermediateOutputPath)</_TrimmedBaseIntPath>
+      <_TrimmedOutPath>$(_AbsoluteOutputPath)</_TrimmedOutPath>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(MSBuildProjectDirectory)\$(BaseIntermediateOutputPath)"
+             Condition="!Exists('$(MSBuildProjectDirectory)\$(BaseIntermediateOutputPath)')" />
+
+    <Exec
+      Command="dotnet script &quot;$(_ContextJsonScript)&quot; 1 &quot;$(MSBuildProjectDirectory)&quot; 2 &quot;$(ModName)&quot; 3 &quot;$(Configuration)&quot; 4 &quot;$(TargetFramework)&quot; 5 &quot;$(_TrimmedDuckovFolder)&quot; 6 &quot;$(_TrimmedSteamFolder)&quot; 7 &quot;$(AssetsDir)&quot; 8 &quot;$(LocalizationAssetsDir)&quot; 9 &quot;$(EnableILRepack)&quot; 10 &quot;$(EnableGlobalUsing)&quot; 11 &quot;$(IncludeHarmony)&quot; 12 &quot;$(DeployMod)&quot; 13 &quot;$(ExcludeSdkLib)&quot; 14 &quot;$(IsModLib)&quot; 15 &quot;$(_TrimmedIntPath)&quot; 16 &quot;$(_TrimmedBaseIntPath)&quot; 17 &quot;$(_TrimmedOutPath)&quot;"
+      ContinueOnError="false"
+      WorkingDirectory="$(MSBuildProjectDirectory)"
+      Condition="Exists('$(_ContextJsonScript)')">
+      <Output TaskParameter="ExitCode" PropertyName="_SerializeContextExitCode" />
+    </Exec>
+
+    <!-- 0.1.5 등 구버전 SDK에는 _ContextJsonScript가 없음. 스크립트가 있을 때만 실패 시 에러 -->
+    <Error Condition="Exists('$(_ContextJsonScript)') AND '$(_SerializeContextExitCode)' != '0'"
+           Text="Failed to serialize BuildContext JSON" />
+    <Message Text="✅ BuildContext generated successfully" Importance="normal"
+             Condition="'$(_SerializeContextExitCode)' == '0'" />
+  </Target>
+</Project>

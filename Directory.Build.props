@@ -1,0 +1,17 @@
+<Project>
+  <!-- Ducky SDK를 사용한 프로젝트 설정 -->
+  <!-- 이 파일은 프로젝트 루트에 위치하며, 모든 하위 프로젝트에 자동으로 적용됩니다 -->
+  
+  <PropertyGroup>
+    <!-- Steam 설치 경로 -->
+    <!-- Windows 기본 경로 -->
+    <SteamFolder Condition="'$(OS)' == 'Windows_NT'">C:\Program Files (x86)\Steam</SteamFolder>
+    
+    <!-- Linux 기본 경로 -->
+    <SteamFolder Condition="'$(OS)' != 'Windows_NT'">$(HOME)/.steam/steam</SteamFolder>
+    
+    <!-- DuckovFolder는 게임 설치 경로 (Local.props에서 오버라이드 가능) -->
+    <DuckovFolder Condition="'$(DuckovFolder)' == ''">$(SteamFolder)\steamapps\common\Escape from Duckov\</DuckovFolder>
+  </PropertyGroup>
+</Project>
+
