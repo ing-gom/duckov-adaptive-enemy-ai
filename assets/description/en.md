@@ -35,6 +35,12 @@ Enemies adjust their **combat judgment** based on the player's weapons and **arm
 - When the player's armor is **high** → enemies **defensive judgment**
 - When the player's armor is **low** → enemies **aggressive judgment**
 
+## 🔧 Source code
+
+The full source is on GitHub: https://github.com/ing-gom/duckov-adaptive-enemy-ai
+
+It is MIT licensed. Bug reports and pull requests are welcome — an issue there can hold a repro, a log and a discussion thread, which works better than a Steam comment.
+
 ## 📋 Notes
 
 - This mod is still experimental; enemy combat judgment may feel more aggressive or less aggressive than expected. Your feedback after playing would be very helpful for the next version.
