@@ -81,6 +81,24 @@ path is wrong. `Local.props` is gitignored.
 
 Dependencies are NuGet packages (`Ducky.Sdk`, `Lib.Harmony`); no game DLLs are included here.
 
+## Simulating the logic
+
+`tools/aea_sim.py` runs the perception, search and approach decisions without the game, so a change
+can be checked in numbers before it is checked in a raid. It ports `ComputeRawSight`,
+`HasConfirmedSightToPlayer`, `CanSensePlayer`, `IsAggroOnPlayer`, `RecordHeardPlayerSound`,
+`TickSightMemory` and `GetDesiredMinDistanceFromPlayer`, then runs v1.3.9 and v1.4.0 through the
+same scenarios.
+
+```bash
+python tools/aea_sim.py            # scenario comparison
+python tools/aea_sim.py --sweep    # parameter tables
+python tools/aea_sim.py --trace --only "sustained"
+```
+
+It does not port the behavior tree, pathfinding or cover, so read it for trends, not for exact
+timings. It found a real bug during the v1.4.0 work: chaining search legs pushed the leg start past
+the clue's memory window, so the give-up branch stopped running and enemies stayed alerted forever.
+
 ## Contributing
 
 Issues and pull requests are welcome. Bug reports are more useful than Steam comments because they

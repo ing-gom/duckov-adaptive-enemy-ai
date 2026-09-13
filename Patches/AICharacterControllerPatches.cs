@@ -2505,22 +2505,16 @@ namespace AdaptiveEnemyAI.Patches
                 && now - st.LastSeenAt >= Mathf.Max(0f, AdaptiveAISettings.SightMemorySeconds);
             bool soundUsable = AdaptiveAISettings.SoundTrackingEnabled && st.HasSound
                 && now - st.LastSoundAt <= Mathf.Max(0f, AdaptiveAISettings.SoundTrackMemorySeconds);
-            if (!sightUsable && !soundUsable) return;
-
-            bool useSound = soundUsable && (!sightUsable || st.LastSoundAt > st.LastSeenAt);
-            Vector3 searchPos = useSound ? st.LastSoundPos : st.LastSeenPos;
-
-            if (!st.SearchHandedOff)
-            {
-                st.SearchHandedOff = true;
-                st.SearchStartedAt = now;
-                HandOffSearchToPoint(ai, c, searchPos, useSound ? "소리" : "목격");
-                return;
-            }
-
             float duration = Mathf.Max(0f, AdaptiveAISettings.SightSearchDurationSeconds);
-            if (duration > 0f && now - st.SearchStartedAt >= duration)
+
+            // 수색 구간이 이미 진행 중이면 만료 처리부터 한다. 단서가 그 사이 만료됐더라도
+            // 여기서 반드시 상태를 정리해야 한다 — 그러지 않으면 noticed=true 인 채로 굳어
+            // 순찰에 영영 복귀하지 못한다. (구간을 이어 붙이면 시작 시각이 단서보다 늦어지므로,
+            // 구간이 끝날 때 그 단서가 이미 SoundTrackMemorySeconds 를 넘길 수 있다.)
+            if (st.SearchHandedOff)
             {
+                if (duration <= 0f || now - st.SearchStartedAt < duration) return;
+
                 // 수색 중에 들린 더 새로운 소리가 아직 유효하면, 포기하지 않고 그 지점으로 다음 수색을 간다.
                 // 한 번에 한 지점씩 — 플레이어가 계속 쏘면 결국 도달하지만, 실시간 위치를 따라붙지는 않는다.
                 if (soundUsable && st.LastSoundAt > st.SearchStartedAt)
@@ -2533,11 +2527,22 @@ namespace AdaptiveEnemyAI.Patches
                 }
                 st.HasLastSeen = false;
                 st.HasSound = false;
+                st.SearchHandedOff = false;
+                st.SearchStartedAt = -999f;
                 ai.noticed = false;
                 ai.alert = false;
                 if (AdaptiveAISettings.DebugLogSight)
                     Debug.Log($"[AdaptiveEnemyAI] search gave up: AI={ai.GetInstanceID()} → 패트롤 복귀");
+                return;
             }
+
+            if (!sightUsable && !soundUsable) return;
+
+            bool useSound = soundUsable && (!sightUsable || st.LastSoundAt > st.LastSeenAt);
+            Vector3 searchPos = useSound ? st.LastSoundPos : st.LastSeenPos;
+            st.SearchHandedOff = true;
+            st.SearchStartedAt = now;
+            HandOffSearchToPoint(ai, c, searchPos, useSound ? "소리" : "목격");
         }
 
         /// <summary>단서 지점을 "저기서 뭔가 있었다" 상태로 게임에 넘긴다. 타겟은 지우고 인지 지점만 남긴다(조준·사격 없음).</summary>
