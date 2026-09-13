@@ -4,14 +4,11 @@
 
 A mod that analyzes the player's loadout and behavior to change how enemies fight. When no initial behavior pattern exists, enemies mainly act according to the player's loadout. As patterns accumulate, it creates a more challenging combat environment for the player.
 
-## 🔄 What's new in v1.3.9
+## 🔄 What's new in v1.4.0
 
-- **Fixed seeing through walls**: enemies no longer notice, chase and shoot the player through walls. They now aim and fire **only when they can actually see you**.
-- **Reacting to sound**: on hearing a gunshot an enemy **walks to where the sound came from and searches there**. Sound alone never makes it follow your current position.
-- **Searching after losing sight**: when an enemy loses sight of you it heads to the **last place it saw you**, looks around for a while, then returns to patrol.
-- **Sight cone**: enemies now have a forward cone and peripheral vision. Approaching from behind takes longer to be spotted.
-- **Reaction time**: there is now a short beat between an enemy spotting you and opening fire. The more the mod has learned about you, the shorter that beat gets.
-
+- **Sound no longer leads enemies to you**: a gunshot starts one search leg toward where that shot came from. Further shots don't redirect it until the leg is over (8s); then the enemy moves on to the newest sound. It walks to where you *were*, not where you are.
+- **No more hugging**: gun-armed enemies now hold their weapon's minimum range (pistol/SMG 2m, shotgun 2.5m, AR 3m, BR/LMG 4m, sniper 5m) instead of closing to touching distance. Melee is unchanged.
+- **A glance doesn't trigger a charge**: an alerted enemy with no target needs a confirmed look (past the reaction delay) before the mod starts steering it toward you — the same bar as pulling the trigger.
 ## ✨ Key Features
 
 - **Enemy AI calibration**: Enemy **combat judgment** (aggressive judgment ↔ defensive judgment) changes in real time based on loadout and behavior.

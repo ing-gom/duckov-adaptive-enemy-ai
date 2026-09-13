@@ -2449,10 +2449,21 @@ namespace AdaptiveEnemyAI.Patches
         {
             if (ai == null || !AdaptiveAISettings.SoundTrackingEnabled) return;
             var st = _sightStateByAi.GetOrCreateValue(ai);
-            st.LastSoundAt = Time.time;
+            float now = Time.time;
+            st.LastSoundAt = now;
             st.LastSoundPos = soundPos;
             st.HasSound = true;
-            // 새 소리는 새 단서다 — 이전 수색이 끝났더라도 다시 가보게 한다.
+            // 이미 한 지점을 향해 수색 중이면 방향을 바꾸지 않는다. 총성마다 지점을 갱신하면
+            // "소리가 난 곳"이 곧 플레이어 현재 위치가 되어, 수색이 아니라 추적이 된다(v1.3.9 댓글: 소리나면 무조건 돌격).
+            // 단서만 기억해 두고, 이 수색이 끝날 때 TickSightMemory가 더 새로운 소리로 다음 수색을 이어간다.
+            float cooldown = Mathf.Max(0f, AdaptiveAISettings.SoundSearchRetargetCooldownSeconds);
+            if (st.SearchHandedOff && now - st.SearchStartedAt < cooldown)
+            {
+                if (AdaptiveAISettings.DebugLogSight)
+                    Debug.Log($"[AdaptiveEnemyAI] 소리 기록만(수색 중 {now - st.SearchStartedAt:F1}s): AI={ai.GetInstanceID()} pos={soundPos}");
+                return;
+            }
+            // 수색 중이 아니거나 쿨다운이 지났다 — 새 단서로 다시 가본다.
             st.SearchHandedOff = false;
             st.SearchStartedAt = -999f;
         }
@@ -2510,6 +2521,16 @@ namespace AdaptiveEnemyAI.Patches
             float duration = Mathf.Max(0f, AdaptiveAISettings.SightSearchDurationSeconds);
             if (duration > 0f && now - st.SearchStartedAt >= duration)
             {
+                // 수색 중에 들린 더 새로운 소리가 아직 유효하면, 포기하지 않고 그 지점으로 다음 수색을 간다.
+                // 한 번에 한 지점씩 — 플레이어가 계속 쏘면 결국 도달하지만, 실시간 위치를 따라붙지는 않는다.
+                if (soundUsable && st.LastSoundAt > st.SearchStartedAt)
+                {
+                    st.SearchHandedOff = false;
+                    st.SearchStartedAt = -999f;
+                    if (AdaptiveAISettings.DebugLogSight)
+                        Debug.Log($"[AdaptiveEnemyAI] search leg done → 다음 소리 지점으로: AI={ai.GetInstanceID()} pos={st.LastSoundPos}");
+                    return;
+                }
                 st.HasLastSeen = false;
                 st.HasSound = false;
                 ai.noticed = false;
@@ -2675,12 +2696,14 @@ namespace AdaptiveEnemyAI.Patches
             if (ai.noticed && ai.NoticeFromCharacter == main) return true;
             if (ai.searchedEnemy != null && ai.searchedEnemy.gameObject == playerReceiver.gameObject) return true;
             if (ai.aimTarget != null && ai.aimTarget.gameObject == playerReceiver.gameObject) return true;
-            // 인지만 되었고(시야 등) NoticeFromCharacter가 미설정이어도, 다른 적을 명시적으로 타겟하지 않으면 플레이어 어그로로 간주 → 피해 없이도 에임 추적 적용.
+            // 인지만 되었고(소리·수색 인계 등) 아무도 타겟하지 않은 상태. 게임 BT가 플레이어를 잡았으면 위에서 이미 true다.
+            // 여기서는 확정 시야(반응 지연 통과)를 요구한다 — 주변시에 스친 정도로 접근 이동까지 붙이면,
+            // 소리 지점으로 걸어가던 적이 모퉁이에서 플레이어를 흘끗 본 순간 돌격병이 된다. 방아쇠 게이트와 같은 기준.
             if (ai.noticed)
             {
                 if (ai.searchedEnemy != null && ai.searchedEnemy.gameObject != playerReceiver.gameObject) return false;
                 if (ai.aimTarget != null && ai.aimTarget.gameObject != playerReceiver.gameObject) return false;
-                return true;
+                return !AdaptiveAISettings.RequireLineOfSightForAggro || HasConfirmedSightToPlayer(ai, main);
             }
             return false;
         }

@@ -373,6 +373,11 @@ namespace AdaptiveEnemyAI.Settings
         public static float RunWhenApproachingFromDistanceDot { get; set; } = 0.35f;
         /// <summary>When closer than this distance (m) to player, remove approach component from move to prevent overlap/collision. Approach target circle (boundary) also uses this. 0 = not applied (approach distance limit disabled). Default 0.</summary>
         public static float MinDistanceFromPlayer { get; set; } = 0f;
+        /// <summary>If true, a gun-armed enemy never closes past its weapon's preferred minimum range (WeaponPreferredRange.OptimalMin: pistol/SMG 2m, shotgun 2.5m, AR 3m, BR/LMG 4m, sniper 5m).
+        /// Takes the larger of this and MinDistanceFromPlayer. Melee is unaffected. Without it the only floor is the 1.2m overlap escape, so riflemen walk up and rub against the player. Default true.</summary>
+        public static bool MinDistanceFromWeaponPreferredRange { get; set; } = true;
+        /// <summary>Scale applied to the weapon's OptimalMin when used as the approach floor. 1 = as tabled. Default 1.</summary>
+        public static float MinDistanceWeaponPreferredRangeScale { get; set; } = 1f;
         /// <summary>Whether to use as approach/move target not player position but "this distance (m) behind the direction the player is facing". 0 = use player position (original). 2.5 = use point 2.5m behind player as target center when approaching to reduce overlap. Updated each time movement logic runs, relative to player facing.</summary>
         public static float ApproachTargetOffsetBehindPlayerMeters { get; set; } = 2.5f;
 
@@ -804,6 +809,10 @@ namespace AdaptiveEnemyAI.Settings
         public static bool SoundTrackingEnabled { get; set; } = true;
         /// <summary>Seconds a heard player position stays worth investigating. Default 12.</summary>
         public static float SoundTrackMemorySeconds { get; set; } = 12f;
+        /// <summary>While a search leg is running, a new gunshot does NOT redirect it until this many seconds have passed since the leg started.
+        /// One search = one point: without this, every shot re-aimed the search at the player's live position, which is a charge with extra steps.
+        /// When the leg ends, a fresher sound heard meanwhile starts the next leg instead of returning to patrol. Default 8 (= SightSearchDurationSeconds, so legs never retarget mid-way).</summary>
+        public static float SoundSearchRetargetCooldownSeconds { get; set; } = 8f;
         public static bool DebugLogSight { get; set; } = false;
 
         // ---- Retreat→approach pattern (encourage approach when player vulnerable) ----

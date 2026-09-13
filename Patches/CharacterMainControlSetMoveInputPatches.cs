@@ -732,7 +732,7 @@ namespace AdaptiveEnemyAI.Patches
             if (mainForRetreat != null && GetOrbitDirection(livePlayerPos, aiPos, mainForRetreat, out Vector3 orbitDirForRetreat, __instance))
                 retreatDir = Vector3.Lerp(-toPlayerFlat, orbitDirForRetreat, RetreatArcBlend).normalized;
             // 겹침 근본 방지: 접근 방향을 "플레이어 위치"가 아닌 "최소 유지 거리 위의 목표점"으로 통일. 옵션으로 목표 중심을 플레이어 등 뒤 Nm로 두어 겹침 완화.
-            float desiredMinDist = GetDesiredMinDistanceFromPlayer(__instance, enemy.IsMelee);
+            float desiredMinDist = GetDesiredMinDistanceFromPlayer(__instance, enemy);
             Vector3 movementCenter = GetMovementTargetCenterPosition(mainForRetreat, livePlayerPos, AdaptiveAISettings.ApproachTargetOffsetBehindPlayerMeters);
             Vector3 approachTargetPos = GetApproachTargetPosition(aiPos, movementCenter, desiredMinDist);
             Vector3 toApproachTarget = approachTargetPos - aiPos;
@@ -994,10 +994,10 @@ namespace AdaptiveEnemyAI.Patches
             // 실시간으로 너무 가까우면 경로 끊어 비비기 방지. 단, 엄폐물 우회용·경계선 플레이어 뒤 웨이포인트는 관통 허용(접근거리 무시).
             if (AI_PathControlPatches.IsCharacterPathFollowing(__instance))
             {
-                float minDistToKeepPath = enemy.IsMelee ? AdaptiveAISettings.MinDistanceFromPlayer * 0.5f : RangedTooCloseRetreatDist;
+                float minDistToKeepPath = enemy.IsMelee ? AdaptiveAISettings.MinDistanceFromPlayer * 0.5f : Mathf.Max(RangedTooCloseRetreatDist, desiredMinDist);
                 bool weRequestedFlankingPath = _lastPathRequestToPlayerTime.TryGetValue(__instance, out float reqTime) && (Time.time - reqTime) < PathRequestToPlayerGraceSeconds;
                 bool weRequestedBoundaryWaypoint = weRequestedFlankingPath && _boundaryWaypointPlayerForwardByCharacter.ContainsKey(__instance);
-                if (AdaptiveAISettings.MinDistanceFromPlayer > 0f && liveDist < minDistToKeepPath && !weRequestedFlankingPath)
+                if (IsMinDistanceFromPlayerActive() && liveDist < minDistToKeepPath && !weRequestedFlankingPath)
                 {
                     try { ai.StopMove(); } catch { }
                     _lastPathRequestToPlayerTime.Remove(__instance);
@@ -1661,13 +1661,23 @@ namespace AdaptiveEnemyAI.Patches
             return Vector3.Dot(playerForward, toPlayer) < BehindPlayerDotThreshold;
         }
 
-        /// <summary>접근 시 "절대 이 거리보다 가까이 가지 않을" 최소 유지 거리(m). 근접=OverlapEscapeDist, 총기=Max(MinDistanceFromPlayer, OverlapEscapeDist). MinDistanceFromPlayer로 접근 거리 조정 가능.</summary>
-        private static float GetDesiredMinDistanceFromPlayer(CharacterMainControl c, bool isMelee)
+        /// <summary>접근 시 "절대 이 거리보다 가까이 가지 않을" 최소 유지 거리(m). 근접=OverlapEscapeDist.
+        /// 총기=Max(MinDistanceFromPlayer, 무기 선호 최소거리(OptimalMin)×Scale, OverlapEscapeDist).
+        /// 무기 선호 거리를 안 쓰면 총기 적의 바닥은 겹침 해소 1.2m뿐이라 소총수가 플레이어에게 붙어 비빈다.</summary>
+        private static float GetDesiredMinDistanceFromPlayer(CharacterMainControl c, bool isMelee, string? gunTypeTag)
         {
             if (isMelee) return OverlapEscapeDist;
             float minFromSettings = Mathf.Max(0f, AdaptiveAISettings.MinDistanceFromPlayer);
+            if (AdaptiveAISettings.MinDistanceFromWeaponPreferredRange && WeaponPreferredRange.TryGet(gunTypeTag, out var preferred))
+                minFromSettings = Mathf.Max(minFromSettings, preferred.OptimalMin * Mathf.Max(0f, AdaptiveAISettings.MinDistanceWeaponPreferredRangeScale));
             return Mathf.Max(minFromSettings, OverlapEscapeDist);
         }
+        private static float GetDesiredMinDistanceFromPlayer(CharacterMainControl c, in AICharacterControllerPatches.EnemyLoadoutSnapshot loadout)
+            => GetDesiredMinDistanceFromPlayer(c, loadout.IsMelee, loadout.GunTypeTag);
+
+        /// <summary>최소 유지 거리 제한이 켜져 있는지. 수동값(MinDistanceFromPlayer)이나 무기 선호 거리 중 하나라도 켜져 있으면 true.</summary>
+        private static bool IsMinDistanceFromPlayerActive()
+            => AdaptiveAISettings.MinDistanceFromPlayer > 0f || AdaptiveAISettings.MinDistanceFromWeaponPreferredRange;
 
         /// <summary>접근 목표 위치: 플레이어로부터 minDist(m) 떨어진, AI 방향의 한 점. 이 점을 목표로 하면 minDist 안으로 들어가지 않음(겹침 근본 방지).</summary>
         private static Vector3 GetApproachTargetPosition(Vector3 aiPos, Vector3 playerPos, float minDist)
@@ -1811,7 +1821,7 @@ namespace AdaptiveEnemyAI.Patches
             if (c != null)
             {
                 var loadout = AICharacterControllerPatches.GetEnemyLoadout(ai);
-                float desiredMin = GetDesiredMinDistanceFromPlayer(c, loadout.IsMelee);
+                float desiredMin = GetDesiredMinDistanceFromPlayer(c, loadout);
                 bool inBoundary = dist >= desiredMin - ApproachBoundaryHysteresisBand && dist <= desiredMin + ApproachBoundaryHysteresisBand;
                 if (inBoundary) return;
             }
@@ -1913,7 +1923,7 @@ namespace AdaptiveEnemyAI.Patches
             if (c != null)
             {
                 var loadout = AICharacterControllerPatches.GetEnemyLoadout(ai);
-                float desiredMin = GetDesiredMinDistanceFromPlayer(c, loadout.IsMelee);
+                float desiredMin = GetDesiredMinDistanceFromPlayer(c, loadout);
                 bool inBoundary = dist >= desiredMin - ApproachBoundaryHysteresisBand && dist <= desiredMin + ApproachBoundaryHysteresisBand;
                 if (inBoundary) return;
             }
@@ -1921,7 +1931,7 @@ namespace AdaptiveEnemyAI.Patches
             if (c != null)
             {
                 var enemyLoadout = AICharacterControllerPatches.GetEnemyLoadout(ai);
-                float desiredMinDist = GetDesiredMinDistanceFromPlayer(c, enemyLoadout.IsMelee);
+                float desiredMinDist = GetDesiredMinDistanceFromPlayer(c, enemyLoadout);
                 float distMaxBase = Mathf.Max(Mathf.Max(0.1f, AdaptiveAISettings.OrbitDistMin), AdaptiveAISettings.OrbitDistMax);
                 orbitDistMaxOverride = Mathf.Max(distMaxBase, RangedTooCloseRetreatDist + 1f, desiredMinDist + 1f);
             }
@@ -1945,8 +1955,9 @@ namespace AdaptiveEnemyAI.Patches
             if (dist < 0.001f) return;
             float closeThreshold = Mathf.Max(AdaptiveAISettings.OrbitDistMin, AdaptiveAISettings.OrbitDistMax);
             var ai = c.GetComponent<global::AICharacterController>() ?? c.GetComponentInParent<global::AICharacterController>();
-            bool isMelee = ai != null && AICharacterControllerPatches.GetEnemyLoadout(ai).IsMelee;
-            float desiredMinDist = GetDesiredMinDistanceFromPlayer(c, isMelee);
+            var loadoutForMin = ai != null ? AICharacterControllerPatches.GetEnemyLoadout(ai) : default;
+            bool isMelee = ai != null && loadoutForMin.IsMelee;
+            float desiredMinDist = GetDesiredMinDistanceFromPlayer(c, loadoutForMin);
             bool inBoundaryBand = dist >= desiredMinDist - ApproachBoundaryHysteresisBand && dist <= desiredMinDist + ApproachBoundaryHysteresisBand;
             bool inOrbitOrBoundaryRange = dist < closeThreshold || inBoundaryBand;
             if (!inOrbitOrBoundaryRange) return;
@@ -2006,7 +2017,7 @@ namespace AdaptiveEnemyAI.Patches
         /// <summary>플레이어와 너무 가까우면 접근 방향 이동 성분을 제거해 좌표 겹침/비비기 방지. 겹침 구간(OverlapEscapeDist 미만)에서는 플레이어 반대 방향으로 밀어냄. 엄폐물 우회 경로 추종 중에는 최소 거리 캡 생략(경로 관통 허용, 최종 위치만 만족).</summary>
         private static void CapMoveInputByMinDistanceFromPlayer(ref Vector3 moveInput, CharacterMainControl c)
         {
-            if (c == null || AdaptiveAISettings.MinDistanceFromPlayer <= 0f) return;
+            if (c == null || !IsMinDistanceFromPlayerActive()) return;
             var main = CharacterMainControl.Main;
             if (main == null) return;
             // 플레이어 뒤 웨이포인트로 이동 중: 접근거리 제한 전부 스킵 → 경로대로 지나가서 뒤로 도달 가능하게 함
@@ -2026,8 +2037,11 @@ namespace AdaptiveEnemyAI.Patches
             else if (toPlayer.sqrMagnitude >= 0.0001f)
                 toPlayer.Normalize();
             var ai = c.GetComponent<global::AICharacterController>() ?? c.GetComponentInParent<global::AICharacterController>();
-            bool isMelee = ai != null && AICharacterControllerPatches.GetEnemyLoadout(ai).IsMelee;
-            float effectiveMinDist = GetDesiredMinDistanceFromPlayer(c, isMelee);
+            var loadoutForCap = ai != null ? AICharacterControllerPatches.GetEnemyLoadout(ai) : default;
+            bool isMelee = ai != null && loadoutForCap.IsMelee;
+            float effectiveMinDist = GetDesiredMinDistanceFromPlayer(c, loadoutForCap);
+            // 총기 적이 "너무 가깝다"고 보는 거리: 고정 3m와 무기 바닥 중 큰 쪽(저격 5m·LMG 4m가 3m 규칙에 묻히지 않게).
+            float rangedTooClose = Mathf.Max(RangedTooCloseRetreatDist, effectiveMinDist);
             if (dist >= effectiveMinDist || dist < 0.001f) return;
             // 경계선 데드존: 원 위에 있을 때 Cap을 건드리지 않음 → 접근/후퇴 전환이 프레임마다 바뀌며 앞뒤로 진동하는 현상 방지
             if (dist >= effectiveMinDist - ApproachBoundaryRadialDeadZone && dist <= effectiveMinDist + ApproachBoundaryRadialDeadZone) return;
@@ -2051,9 +2065,9 @@ namespace AdaptiveEnemyAI.Patches
                 Vector3 aiPos = c.transform.position;
                 var enemy = ai != null ? AICharacterControllerPatches.GetEnemyLoadout(ai) : default;
                 // 뒤쪽 도달 상태(이동 정지 중)면 궤도 주입하지 않음. 단 총기 적이 RangedTooCloseRetreatDist 미만이면 후퇴 주입하므로 스킵하지 않음.
-                if (IsAIBehindPlayer(aiPos, playerPos, main) && dist <= StopWhenReachedBackDistMax && (ai == null || enemy.IsMelee || dist >= RangedTooCloseRetreatDist)) return;
+                if (IsAIBehindPlayer(aiPos, playerPos, main) && dist <= StopWhenReachedBackDistMax && (ai == null || enemy.IsMelee || dist >= rangedTooClose)) return;
                 // 총기 적: 너무 가까운데 이동이 0이면 후퇴(밖으로) 방향 주입 → 사거리 확보 후 공격 가능. 근접은 궤도만.
-                if (ai != null && !enemy.IsMelee && dist > OverlapEscapeDist && dist < RangedTooCloseRetreatDist)
+                if (ai != null && !enemy.IsMelee && dist > OverlapEscapeDist && dist < rangedTooClose)
                 {
                     float mag = Mathf.Clamp(AdaptiveAISettings.OrbitMinMoveAfterCapMagnitude > 0f ? AdaptiveAISettings.OrbitMinMoveAfterCapMagnitude : 0.55f, 0.4f, 1f);
                     moveInput.x = -toPlayer.x * mag;
@@ -2515,7 +2529,7 @@ namespace AdaptiveEnemyAI.Patches
                             _lastMeleePathRefreshTime[c] = now;
                             var enemyMelee = AICharacterControllerPatches.GetEnemyLoadout(ai);
                             Vector3 meleePlayerPos = GetSmoothedPlayerPositionForMovement(c);
-                            float meleeMinDist = GetDesiredMinDistanceFromPlayer(c, enemyMelee.IsMelee);
+                            float meleeMinDist = GetDesiredMinDistanceFromPlayer(c, enemyMelee);
                             Vector3 meleeCenter = GetMovementTargetCenterPosition(main, meleePlayerPos, AdaptiveAISettings.ApproachTargetOffsetBehindPlayerMeters);
                             Vector3 meleePathTarget = GetApproachTargetPosition(aiPos, meleeCenter, meleeMinDist);
                             if (AI_PathControlPatches.RequestPathToPosition(c, meleePathTarget))
@@ -2534,7 +2548,7 @@ namespace AdaptiveEnemyAI.Patches
                             {
                                 var enemyPath = AICharacterControllerPatches.GetEnemyLoadout(ai);
                                 Vector3 livePosForPath = main.transform.position;
-                                float desiredMinDistPath = GetDesiredMinDistanceFromPlayer(c, enemyPath.IsMelee);
+                                float desiredMinDistPath = GetDesiredMinDistanceFromPlayer(c, enemyPath);
                                 Vector3 pathCenter = GetMovementTargetCenterPosition(main, livePosForPath, AdaptiveAISettings.ApproachTargetOffsetBehindPlayerMeters);
                                 Vector3 pathTarget = GetApproachTargetPosition(aiPos, pathCenter, desiredMinDistPath);
                                 if (AI_PathControlPatches.RequestPathToPosition(c, pathTarget))
@@ -2576,7 +2590,7 @@ namespace AdaptiveEnemyAI.Patches
                     }
                     var enemyApproachPath = AICharacterControllerPatches.GetEnemyLoadout(ai);
                     Vector3 livePosForPath = main.transform.position;
-                    float desiredMinDistPath = GetDesiredMinDistanceFromPlayer(c, enemyApproachPath.IsMelee);
+                    float desiredMinDistPath = GetDesiredMinDistanceFromPlayer(c, enemyApproachPath);
                     Vector3 pathCenter = GetMovementTargetCenterPosition(main, livePosForPath, AdaptiveAISettings.ApproachTargetOffsetBehindPlayerMeters);
                     Vector3 pathTarget = GetApproachTargetPosition(aiPos, pathCenter, desiredMinDistPath);
                     if (AI_PathControlPatches.RequestPathToPosition(c, pathTarget))
@@ -2594,7 +2608,7 @@ namespace AdaptiveEnemyAI.Patches
                 // 겹침 근본 방지: 접근 목표를 "플레이어 위치"가 아닌 "최소 유지 거리 위의 한 점"으로 통일. 옵션으로 목표 중심을 플레이어 등 뒤 Nm로 둠.
                 var enemyApproach = AICharacterControllerPatches.GetEnemyLoadout(ai);
                 Vector3 livePlayerPosApproach = main.transform.position;
-                float desiredMinDistApproach = GetDesiredMinDistanceFromPlayer(c, enemyApproach.IsMelee);
+                float desiredMinDistApproach = GetDesiredMinDistanceFromPlayer(c, enemyApproach);
                 Vector3 approachCenter = GetMovementTargetCenterPosition(main, livePlayerPosApproach, AdaptiveAISettings.ApproachTargetOffsetBehindPlayerMeters);
                 Vector3 approachTargetPos = GetApproachTargetPosition(aiPos, approachCenter, desiredMinDistApproach);
                 Vector3 toTarget = approachTargetPos - aiPos;
