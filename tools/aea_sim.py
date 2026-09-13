@@ -491,13 +491,322 @@ def sweep_standoff(speed, values):
     print()
 
 
+# ================================================================ 경계선 진동 검사
+# CharacterMainControlSetMoveInputPatches 의 "접근 목표 → 경계 밴드 → Cap" 경로를
+# 기하만 떼어내 옮긴 것. 전술 블렌드(엄폐·피킹·후퇴 성향)는 방향이 아니라 세기를
+# 건드리므로 생략했다. 진동은 방향이 프레임마다 뒤집혀서 생기므로 이 골격으로 본다.
+
+APPROACH_OFFSET_BEHIND = 2.5      # ApproachTargetOffsetBehindPlayerMeters
+BOUNDARY_HYSTERESIS_BAND = 1.5    # ApproachBoundaryHysteresisBand
+BOUNDARY_RADIAL_DEADZONE = 0.5    # ApproachBoundaryRadialDeadZone
+ORBIT_FLIP_PERIOD = 4.0           # OrbitDirectionFlipPeriod
+ORBIT_PREFER_BEHIND = 0.4         # OrbitPreferBehind
+BEHIND_DOT_THRESHOLD = -0.25      # BehindPlayerDotThreshold
+STOP_WHEN_REACHED_BACK_DIST_MAX = 3.5
+RANGED_TOO_CLOSE_RETREAT_DIST = 3.0
+ORBIT_MIN_MOVE_AFTER_CAP = 0.5    # OrbitMinMoveAfterCapMagnitude
+OVERLAP_ESCAPE_MAGNITUDE = 0.55
+CLOSE_RANGE_SMOOTH_DIST = 5.0     # CloseRangeMoveSmoothDist (하한)
+CLOSE_RANGE_SMOOTH_MARGIN = 3.0   # CloseRangeMoveSmoothStandoffMargin
+CLOSE_RANGE_SMOOTH_FACTOR = 0.35  # CloseRangeMoveSmoothFactor (Slerp t)
+USE_MOVE_SMOOTHING = True         # StoreLastMoveInput 의 근접 방향 스무딩
+SMOOTH_FOLLOWS_STANDOFF = True    # GetMoveSmoothDistanceFor: 반경이 유지거리를 따라간다
+RECAP_AFTER_SMOOTH = True         # 스무딩 뒤 Cap 재적용
+
+
+def _norm(v):
+    m = math.hypot(v[0], v[1])
+    return (v[0] / m, v[1] / m) if m > 1e-9 else (0.0, 0.0)
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1]
+
+
+# 실험 스위치 (기본은 현재 코드 그대로)
+FIX_BEHIND_SIGN = False      # IsAIBehindPlayer 부호 교정
+BEHIND_HYSTERESIS = 0.0      # 앞/뒤 판정 임계값 히스테리시스 폭
+RESTORE_OUTWARD = False      # 경계 안쪽에서 바깥으로 복원력
+_behind_state = {}
+
+
+def is_ai_behind(ai_pos, player_pos, pfwd, key=None):
+    """IsAIBehindPlayer.
+
+    현재 코드: toPlayer = player - ai 를 쓰고 dot(forward, toPlayer) < -0.25.
+    이러면 AI 가 플레이어 '앞'에 있을 때 true 가 된다 — 이름·용도와 반대다.
+    FIX_BEHIND_SIGN 이면 ai - player 를 써서 실제 '뒤'를 판정한다."""
+    if FIX_BEHIND_SIGN:
+        v = _norm((ai_pos[0] - player_pos[0], ai_pos[1] - player_pos[1]))
+    else:
+        v = _norm((player_pos[0] - ai_pos[0], player_pos[1] - ai_pos[1]))
+    d = _dot(pfwd, v)
+    if BEHIND_HYSTERESIS <= 0.0 or key is None:
+        return d < BEHIND_DOT_THRESHOLD
+    prev = _behind_state.get(key, False)
+    lo = BEHIND_DOT_THRESHOLD - BEHIND_HYSTERESIS
+    hi = BEHIND_DOT_THRESHOLD + BEHIND_HYSTERESIS
+    cur = (d < hi) if prev else (d < lo)
+    _behind_state[key] = cur
+    return cur
+
+
+def orbit_direction(player_pos, ai_pos, pfwd, now, instance_id, allow_flip=True):
+    """GetOrbitDirection. Vector3.Cross(up, v) → 2D 로는 (v.z, -v.x)."""
+    to_p = (player_pos[0] - ai_pos[0], player_pos[1] - ai_pos[1])
+    if to_p[0] ** 2 + to_p[1] ** 2 < 1e-8:
+        return None
+    to_p = _norm(to_p)
+    right = _norm((to_p[1], -to_p[0]))
+    sign = 1.0 if _dot(right, (-pfwd[0], -pfwd[1])) >= 0 else -1.0
+    already_behind = is_ai_behind(ai_pos, player_pos, pfwd, instance_id)
+    if allow_flip and not already_behind:
+        # 4초마다 좌/우가 뒤집힌다 (개체별 위상은 instance_id 로)
+        phase = int(now / ORBIT_FLIP_PERIOD) + instance_id
+        sign *= 1.0 if phase % 2 == 0 else -1.0
+    tangent = (sign * right[0], sign * right[1])
+    bias = 0.9 if already_behind else ORBIT_PREFER_BEHIND
+    d = (tangent[0] + bias * -pfwd[0], tangent[1] + bias * -pfwd[1])
+    return _norm(d) if d[0] ** 2 + d[1] ** 2 > 0.01 else None
+
+
+def decide_move(now, ai_pos, player_pos, pfwd, desired_min, is_melee, instance_id):
+    """접근 목표 → 경계 밴드 → Cap. 반환은 이동 방향(크기 포함, 0 가능)."""
+    to_p = (player_pos[0] - ai_pos[0], player_pos[1] - ai_pos[1])
+    live_dist = math.hypot(*to_p)
+    if live_dist < 1e-6:
+        return (0.0, 0.0)
+    to_p_flat = _norm(to_p)
+    retreat_dir = (-to_p_flat[0], -to_p_flat[1])
+
+    # 접근 목표의 중심은 플레이어가 아니라 "등 뒤 N m"
+    center = (player_pos[0] - pfwd[0] * APPROACH_OFFSET_BEHIND,
+              player_pos[1] - pfwd[1] * APPROACH_OFFSET_BEHIND)
+    from_center = (ai_pos[0] - center[0], ai_pos[1] - center[1])
+    if from_center[0] ** 2 + from_center[1] ** 2 < 1e-8:
+        approach_target = center
+    else:
+        u = _norm(from_center)
+        approach_target = (center[0] + u[0] * desired_min, center[1] + u[1] * desired_min)
+    to_target = (approach_target[0] - ai_pos[0], approach_target[1] - ai_pos[1])
+
+    in_band = (desired_min - BOUNDARY_HYSTERESIS_BAND <= live_dist
+               <= desired_min + BOUNDARY_HYSTERESIS_BAND)
+
+    if to_target[0] ** 2 + to_target[1] ** 2 >= 0.01 and not in_band:
+        move = _norm(to_target)
+    else:
+        o = orbit_direction(player_pos, ai_pos, pfwd, now, instance_id)
+        move = o if o else retreat_dir
+
+    return cap_move(now, move, ai_pos, player_pos, pfwd, desired_min, is_melee, instance_id)
+
+
+def cap_move(now, move, ai_pos, player_pos, pfwd, desired_min, is_melee, instance_id):
+    """CapMoveInputByMinDistanceFromPlayer."""
+    to_p = (player_pos[0] - ai_pos[0], player_pos[1] - ai_pos[1])
+    d = math.hypot(*to_p)
+    if d < 1e-6:
+        return move
+    to_p_flat = _norm(to_p)
+    eff_min = desired_min
+    ranged_too_close = max(RANGED_TOO_CLOSE_RETREAT_DIST, eff_min)
+
+    if d >= eff_min:
+        return move
+    # 경계선 데드존: 원 위에서는 Cap 을 건드리지 않는다
+    if eff_min - BOUNDARY_RADIAL_DEADZONE <= d <= eff_min + BOUNDARY_RADIAL_DEADZONE:
+        return move
+    # 겹침: 반대로 밀어낸다
+    if d < OVERLAP_ESCAPE_DIST:
+        return (-to_p_flat[0] * OVERLAP_ESCAPE_MAGNITUDE, -to_p_flat[1] * OVERLAP_ESCAPE_MAGNITUDE)
+
+    if move[0] ** 2 + move[1] ** 2 < 1e-6:
+        if (is_ai_behind(ai_pos, player_pos, pfwd, instance_id) and d <= STOP_WHEN_REACHED_BACK_DIST_MAX
+                and (is_melee or d >= ranged_too_close)):
+            return (0.0, 0.0)
+        if (not is_melee) and OVERLAP_ESCAPE_DIST < d < ranged_too_close:
+            return (-to_p_flat[0] * ORBIT_MIN_MOVE_AFTER_CAP, -to_p_flat[1] * ORBIT_MIN_MOVE_AFTER_CAP)
+        o = orbit_direction(player_pos, ai_pos, pfwd, now, instance_id)
+        if o:
+            return (o[0] * ORBIT_MIN_MOVE_AFTER_CAP, o[1] * ORBIT_MIN_MOVE_AFTER_CAP)
+        return (0.0, 0.0)
+
+    proj = _dot(move, to_p_flat)
+    if proj > 0:
+        move = (move[0] - to_p_flat[0] * proj, move[1] - to_p_flat[1] * proj)
+    if RESTORE_OUTWARD and d < eff_min - BOUNDARY_RADIAL_DEADZONE:
+        # 안쪽 성분을 지우기만 하면 데드존 안쪽 가장자리에 갇힌다. 바깥으로 밀어
+        # 경계 위로 되돌린다. 세기는 얼마나 안쪽인지에 비례.
+        k = min(1.0, (eff_min - d) / max(0.01, BOUNDARY_RADIAL_DEADZONE)) * 0.5
+        move = (move[0] - to_p_flat[0] * k, move[1] - to_p_flat[1] * k)
+    return move
+
+
+def slerp2(a, b, t):
+    """Vector3.Slerp 의 2D 대응. a 에서 b 쪽으로 각도의 t 만큼 회전."""
+    ax, ay = a
+    bx, by = b
+    d = max(-1.0, min(1.0, ax * bx + ay * by))
+    ang = math.acos(d)
+    if ang < 1e-6:
+        return b
+    aa = math.atan2(ay, ax)
+    cross = ax * by - ay * bx
+    step = ang * t * (1.0 if cross >= 0 else -1.0)
+    na = aa + step
+    return (math.cos(na), math.sin(na))
+
+
+def move_smooth_radius(desired_min):
+    """GetMoveSmoothDistanceFor. 고정 5m 이 아니라 유지 거리 + 여유."""
+    if not SMOOTH_FOLLOWS_STANDOFF:
+        return CLOSE_RANGE_SMOOTH_DIST
+    return max(CLOSE_RANGE_SMOOTH_DIST, desired_min + CLOSE_RANGE_SMOOTH_MARGIN)
+
+
+def smooth_move(prev_dir, cur, dist_to_player, desired_min):
+    """StoreLastMoveInput 의 근접 스무딩. 반경 안에서는 직전 방향과 Slerp(0.35)."""
+    if not USE_MOVE_SMOOTHING or prev_dir is None:
+        return cur
+    m = math.hypot(*cur)
+    if m < 1e-6 or dist_to_player >= move_smooth_radius(desired_min):
+        return cur
+    blended = slerp2(prev_dir, (cur[0] / m, cur[1] / m), CLOSE_RANGE_SMOOTH_FACTOR)
+    return (blended[0] * m, blended[1] * m)
+
+
+def run_boundary(desired_min, speed, duration=30.0, dt=0.05,
+                 player_pos=(0.0, 0.0), player_forward=(1.0, 0.0),
+                 start=(12.0, 0.0), is_melee=False, instance_id=0,
+                 player_turn_rate=0.0):
+    """접근 → 경계 도달 → 그 뒤 거동. 진동 지표를 낸다."""
+    ai = start
+    prev_dir = None
+    prev_dist = math.hypot(ai[0] - player_pos[0], ai[1] - player_pos[1])
+    prev_radial = None
+    t = 0.0
+    settled_at = None
+    dirs_rev = 0
+    radial_rev = 0
+    path_len = 0.0
+    samples = []          # (t, dist)
+    settle_start_pos = None
+    pf = player_forward
+
+    while t <= duration + 1e-9:
+        if player_turn_rate:
+            a = math.atan2(pf[1], pf[0]) + math.radians(player_turn_rate) * dt
+            pf = (math.cos(a), math.sin(a))
+
+        move = decide_move(t, ai, player_pos, pf, desired_min, is_melee, instance_id)
+        _d_now = math.hypot(ai[0] - player_pos[0], ai[1] - player_pos[1])
+        move = smooth_move(prev_dir, move, _d_now, desired_min)
+        # StoreLastMoveInput: 스무딩이 Cap 이 지운 안쪽 성분을 되살리므로 한 번 더 건다
+        if RECAP_AFTER_SMOOTH:
+            move = cap_move(t, move, ai, player_pos, pf, desired_min, is_melee, instance_id)
+        mag = math.hypot(*move)
+        if mag > 1e-6:
+            step = speed * dt * min(1.0, mag)
+            u = (move[0] / mag, move[1] / mag)
+            new = (ai[0] + u[0] * step, ai[1] + u[1] * step)
+        else:
+            u = None
+            step = 0.0
+            new = ai
+
+        d = math.hypot(new[0] - player_pos[0], new[1] - player_pos[1])
+
+        if settled_at is None and d <= desired_min + BOUNDARY_RADIAL_DEADZONE:
+            settled_at = t
+            settle_start_pos = new
+        if settled_at is not None:
+            path_len += step
+            samples.append((t, d))
+            if u and prev_dir and _dot(u, prev_dir) < 0:
+                dirs_rev += 1
+            radial = d - prev_dist
+            if prev_radial is not None and radial * prev_radial < 0 and abs(radial) > 1e-4:
+                radial_rev += 1
+            prev_radial = radial
+
+        if u:
+            prev_dir = u
+        prev_dist = d
+        ai = new
+        t += dt
+
+    if settled_at is None or not samples:
+        return None
+    window = duration - settled_at
+    dists = [d for _, d in samples]
+    mean = sum(dists) / len(dists)
+    std = math.sqrt(sum((x - mean) ** 2 for x in dists) / len(dists))
+    net = math.hypot(ai[0] - settle_start_pos[0], ai[1] - settle_start_pos[1])
+    return {
+        "settled_at": settled_at,
+        "mean_dist": mean,
+        "min_dist": min(dists),
+        "max_dist": max(dists),
+        "std": std,
+        "dir_rev_per_s": dirs_rev / window if window > 0 else 0.0,
+        "radial_rev_per_s": radial_rev / window if window > 0 else 0.0,
+        "wiggle": (path_len / net) if net > 0.1 else float("inf"),
+    }
+
+
+def boundary_report(speed):
+    print("[경계선 거동] 플레이어 정지·정면 고정. 적이 12m 밖에서 접근해 경계에 도달한 뒤 30초.")
+    print("  왕복비 = 이동한 경로 길이 ÷ 순 변위. 1 에 가까우면 한 방향으로 흐르고, 크면 제자리 왕복이다.")
+    print("  반경반전 = 플레이어와의 거리가 멀어짐↔가까워짐으로 뒤집힌 횟수(초당).")
+    print()
+    cases = [
+        ("v1.3.9 (모든 총기)", 1.2, False),
+        ("근접(변경 없음)", 1.2, True),
+        ("PST/SMG 2.0m", 2.0, False),
+        ("SHT 2.5m", 2.5, False),
+        ("AR 3.0m", 3.0, False),
+        ("BR/LMG 4.0m", 4.0, False),
+        ("SNP 5.0m", 5.0, False),
+    ]
+    print(f"  {'경우':<20}{'도달(s)':>9}{'평균거리':>9}{'최소':>7}{'최대':>7}{'표준편차':>9}"
+          f"{'방향반전/s':>11}{'반경반전/s':>11}{'왕복비':>9}")
+    for label, dmin, melee in cases:
+        r = run_boundary(dmin, speed, is_melee=melee)
+        if r is None:
+            print(f"  {label:<20}{'도달 못함':>9}")
+            continue
+        w = "∞" if r["wiggle"] == float("inf") else f"{r['wiggle']:.1f}"
+        print(f"  {label:<20}{r['settled_at']:>9.1f}{r['mean_dist']:>9.2f}{r['min_dist']:>7.2f}"
+              f"{r['max_dist']:>7.2f}{r['std']:>9.3f}{r['dir_rev_per_s']:>11.2f}"
+              f"{r['radial_rev_per_s']:>11.2f}{w:>9}")
+    print()
+    print("  [플레이어가 천천히 회전할 때 — 접근 목표 중심이 계속 움직인다]")
+    print(f"  {'경우':<20}{'평균거리':>9}{'표준편차':>9}{'방향반전/s':>11}{'반경반전/s':>11}{'왕복비':>9}")
+    for label, dmin, melee in cases:
+        r = run_boundary(dmin, speed, is_melee=melee, player_turn_rate=25.0)
+        if r is None:
+            continue
+        w = "∞" if r["wiggle"] == float("inf") else f"{r['wiggle']:.1f}"
+        print(f"  {label:<20}{r['mean_dist']:>9.2f}{r['std']:>9.3f}"
+              f"{r['dir_rev_per_s']:>11.2f}{r['radial_rev_per_s']:>11.2f}{w:>9}")
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser(description="AdaptiveEnemyAI 인지·수색·접근 시뮬레이터")
     ap.add_argument("--speed", type=float, default=2.6, help="적 이동 속도 m/s (기본 2.6, 게임 값 근사)")
     ap.add_argument("--trace", action="store_true", help="0.5초 간격 타임라인 출력")
     ap.add_argument("--only", type=str, default=None, help="시나리오 이름 일부로 필터")
     ap.add_argument("--sweep", action="store_true", help="파라미터 스윕 표만 출력")
+    ap.add_argument("--boundary", action="store_true", help="경계선 도달 후 진동 여부 검사")
     args = ap.parse_args()
+
+    if args.boundary:
+        print(f"이동 속도 {args.speed} m/s · dt 0.05s")
+        print()
+        boundary_report(args.speed)
+        return
 
     if args.sweep:
         print(f"이동 속도 {args.speed} m/s · dt 0.05s\n")

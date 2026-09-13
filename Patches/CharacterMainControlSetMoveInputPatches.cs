@@ -38,8 +38,12 @@ namespace AdaptiveEnemyAI.Patches
         private const float RetreatSuppressWhenCloserThan = 4f;
         /// <summary>총기 적 전용: 이 거리(m) 미만이면 "너무 가까움"으로 보고 후퇴(밖으로) 블렌드 적용. 접근 블렌드는 이 구간에서 스킵해 왓다갓다 방지. 기본 3 (2.5→3).</summary>
         private const float RangedTooCloseRetreatDist = 3f;
-        /// <summary>이 거리(m) 미만에서 이동 방향을 직전 프레임과 블렌드해 근접 시 무빙 흔들림 완화.</summary>
+        /// <summary>이 거리(m) 미만에서 이동 방향을 직전 프레임과 블렌드해 근접 시 무빙 흔들림 완화.
+        /// 실제 적용 반경은 GetMoveSmoothDistanceFor 가 정한다 — 이 값은 하한이다.</summary>
         private const float CloseRangeMoveSmoothDist = 5f;
+        /// <summary>이동 방향 스무딩을 최소 유지 거리보다 이만큼(m) 더 바깥까지 적용한다.
+        /// 흔들림은 적이 경계선 위에서 궤도를 돌 때 생기는데, 그 지점이 5m 고정 반경 밖이면 스무딩이 걸리지 않는다.</summary>
+        private const float CloseRangeMoveSmoothStandoffMargin = 3f;
         /// <summary>근접 구간 이동 방향 스무딩: 새 방향 반영 비율(0~1). 낮을수록 부드러움. 기본 0.35.</summary>
         private const float CloseRangeMoveSmoothFactor = 0.35f;
         /// <summary>엄폐물 끼며 접근 시 블렌드 비율은 AdaptiveAISettings.CoverApproachBlendStrength 사용.</summary>
@@ -1679,6 +1683,20 @@ namespace AdaptiveEnemyAI.Patches
         private static bool IsMinDistanceFromPlayerActive()
             => AdaptiveAISettings.MinDistanceFromPlayer > 0f || AdaptiveAISettings.MinDistanceFromWeaponPreferredRange;
 
+        /// <summary>이 캐릭터에 이동 방향 스무딩을 적용할 반경(m). 고정 5m 이 아니라 최소 유지 거리 + 여유로 잡는다.
+        /// 흔들림은 적이 경계선 위에서 궤도를 도는 동안 접근/궤도 방향이 프레임마다 바뀌면서 생긴다.
+        /// 그 경계선이 저격총처럼 5m 밖이면 스무딩이 걸리지 않아 그대로 떨린다.</summary>
+        private static float GetMoveSmoothDistanceFor(CharacterMainControl c)
+        {
+            float d = CloseRangeMoveSmoothDist;
+            var ai = c != null
+                ? (c.GetComponent<global::AICharacterController>() ?? c.GetComponentInParent<global::AICharacterController>())
+                : null;
+            if (ai == null) return d;
+            float standoff = GetDesiredMinDistanceFromPlayer(c, AICharacterControllerPatches.GetEnemyLoadout(ai));
+            return Mathf.Max(d, standoff + CloseRangeMoveSmoothStandoffMargin);
+        }
+
         /// <summary>접근 목표 위치: 플레이어로부터 minDist(m) 떨어진, AI 방향의 한 점. 이 점을 목표로 하면 minDist 안으로 들어가지 않음(겹침 근본 방지).</summary>
         private static Vector3 GetApproachTargetPosition(Vector3 aiPos, Vector3 playerPos, float minDist)
         {
@@ -2111,7 +2129,7 @@ namespace AdaptiveEnemyAI.Patches
                 Vector3 toPlayer = GetSmoothedPlayerPositionForMovement(c) - c.transform.position;
                 toPlayer.y = 0f;
                 float dist = toPlayer.magnitude;
-                if (dist < CloseRangeMoveSmoothDist && prevStored.sqrMagnitude > 0.0001f)
+                if (dist < GetMoveSmoothDistanceFor(c) && prevStored.sqrMagnitude > 0.0001f)
                 {
                     Vector3 prevFlat = prevStored;
                     prevFlat.y = 0f;
@@ -2122,6 +2140,10 @@ namespace AdaptiveEnemyAI.Patches
                     moveInput.x = blendedDir.x * mag;
                     moveInput.z = blendedDir.z * mag;
                     moveInput.y = 0f;
+                    // 스무딩은 직전 방향을 섞으므로, Cap 이 방금 지운 플레이어 쪽 성분을 되살릴 수 있다.
+                    // 그대로 두면 최소 유지 거리가 새고(총기 적이 1m 대까지 붙는다), 블렌드가 안쪽으로 끌어
+                    // 경계선에서 다시 들쭉날쭉해진다. 블렌드 뒤에 한 번 더 건다.
+                    CapMoveInputByMinDistanceFromPlayer(ref moveInput, c);
                     v = moveInput;
                     v.y = 0f;
                 }
